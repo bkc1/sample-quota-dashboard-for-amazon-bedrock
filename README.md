@@ -10,6 +10,13 @@ Deployment time: 5-10 minutes. Cost: ~$5.73/month.
 
 While Amazon Bedrock provides excellent CloudWatch metrics for monitoring model usage, calculating actual TPM (Tokens Per Minute) quota consumption requires understanding token calculations and burndown rates. Amazon Bedrock uses a token counting system with different calculation stages.
 
+As of March 2026, Amazon Bedrock now publishes two native CloudWatch metrics that simplify observability:
+
+- **`EstimatedTPMQuotaUsage`** - Tracks estimated TPM quota consumption server-side, including cache write tokens and output burndown multipliers. This dashboard uses this metric directly instead of computing consumption from individual token metrics.
+- **`TimeToFirstToken`** - Measures latency from request to first token for streaming APIs (`ConverseStream`, `InvokeModelWithResponseStream`). This dashboard displays p50/p90/p99 percentiles for latency monitoring.
+
+For more details, see the [announcement](https://aws.amazon.com/about-aws/whats-new/2026/03/amazon-bedrock-observability-ttft-quota/).
+
 ### Token Calculation Stages
 
 Amazon Bedrock calculates token quota consumption in three stages:
@@ -229,36 +236,42 @@ if __name__ == "__main__":
 Once max_tokens metric publishing is implemented, this dashboard displays:
 
 - **Initial Reservation**: Quota reserved when requests arrive (includes `max_tokens`)
-- **Actual Consumption**: Tokens consumed after requests complete
+- **Estimated TPM Quota Usage**: Native `EstimatedTPMQuotaUsage` metric from Amazon Bedrock, computed server-side with accurate burndown rates
+- **Request Quota Consumption**: Invocations tracked against RPM quota limits
+- **Time to First Token**: p50/p90/p99 latency percentiles for streaming API calls
 
-This dual view shows what causes throttling (initial reservation) and final consumption.
+This view shows what causes throttling (initial reservation), what Bedrock calculates as actual consumption (estimated TPM), and streaming latency.
 
 ### Understanding Quota Usage Estimates
 
-**Important:** The dashboard shows two different quota metrics, not real-time actual usage.
+**Important:** The dashboard shows different quota perspectives, not real-time actual usage.
 
-Amazon Bedrock dynamically adjusts quota consumption throughout output generation. As tokens are produced, the platform progressively releases the reserved quota. The two metrics serve different purposes:
+Amazon Bedrock dynamically adjusts quota consumption throughout output generation. As tokens are produced, the platform progressively releases the reserved quota. The metrics serve different purposes:
 
-- **Initial Reservation** shows what Bedrock reserves when requests arrive. This determines whether throttling occurs at request start.
-- **Actual Consumption** shows what was actually consumed after requests complete.
+- **Initial Reservation** shows what Bedrock reserves when requests arrive. This determines whether throttling occurs at request start. Requires the custom `MaxTokens` metric (see above).
+- **Estimated TPM Quota Usage** is the native `EstimatedTPMQuotaUsage` metric from `AWS/Bedrock`, computed server-side. It includes cache write tokens and output burndown multipliers automatically, so no client-side calculation is needed.
+- **Time to First Token** shows streaming latency percentiles, useful for SLA monitoring and detecting performance degradation.
 
-For models with 1x burndown rates, Actual Consumption will always be less than or equal to Initial Reservation. For models with 5x burndown rates, Actual Consumption can exceed Initial Reservation if the model generates substantial output.
+For models with 1x burndown rates, Estimated TPM Quota Usage will always be less than or equal to Initial Reservation. For models with 5x burndown rates, Estimated TPM Quota Usage can exceed Initial Reservation if the model generates substantial output.
 
 **Practical implications:**
 - If Initial Reservation exceeds the limit but throttling is not occurring, this is expected as the quota reservation is being released as output generates.
 - If throttling is occurring, consider reducing the `max_tokens` parameter to lower the Initial Reservation.
-- The gap between the two lines shows how much "buffer" the `max_tokens` setting creates.
+- The gap between Initial Reservation and Estimated TPM Quota Usage shows how much "buffer" the `max_tokens` setting creates.
+- Use Time to First Token percentiles to set CloudWatch alarms for latency SLA monitoring.
 
 ## Features
 
 - **80+ Pre-configured Models**: Amazon Nova, Claude, Llama, Mistral, Titan, and more
+- **Native CloudWatch Metrics**: Uses `EstimatedTPMQuotaUsage` and `TimeToFirstToken` from `AWS/Bedrock` for accurate, server-side computed metrics
 - **Type-Safe Registry**: Compile-time validation and IDE autocomplete for model configurations
 - **Region-Specific Architecture**: Easy deployment to different AWS regions with region-specific quota codes
 - **Dual Quota Monitoring**: Tracks both token quotas (TPM) and request quotas (RPM)
+- **Latency Monitoring**: Time to First Token p50/p90/p99 percentiles for streaming APIs
 - **Multi-Endpoint Support**: Regional, cross-region, and global-cross-region endpoints
 - **Application Inference Profile Aggregation**: Aggregate metrics across application profiles that share quota with a system profile
 - **Auto-Refresh**: Updates quota values every 2.9 hours via Amazon EventBridge
-- **Visual Dashboard**: 2-column layout with red quota limit lines
+- **Visual Dashboard**: 4-column layout with red quota limit lines
 
 ## Prerequisites & Setup
 
@@ -300,7 +313,7 @@ graph LR
     
     %% Data Sources
     QUOTAS[Service Quotas API<br/>Quota Limit Values]
-    BEDROCK[Amazon Bedrock Models<br/>Usage Metrics<br/>InputTokenCount, OutputTokenCount<br/>CacheWriteInputTokenCount, Invocations]
+    BEDROCK[Amazon Bedrock Models<br/>Native Metrics<br/>EstimatedTPMQuotaUsage,<br/>TimeToFirstToken,<br/>InputTokenCount, Invocations]
     
     %% Custom Metrics Source
     APP[Application Publishes Custom Metrics]
@@ -318,7 +331,7 @@ graph LR
     LAMBDA -->|Publish quota limits| CW_CUSTOM
     
     %% Flow - Usage Tracking
-    BEDROCK -->|Built-in usage metrics| DASHBOARD
+    BEDROCK -->|Native usage + latency metrics| DASHBOARD
     APP -->|Publish max_tokens<br/>on each request| CW_CUSTOM
     CW_CUSTOM -->|All metrics| DASHBOARD
     
@@ -341,9 +354,11 @@ graph LR
 - **QuotaFetcher AWS Lambda**: ARM64-optimized function that fetches Service Quota limit values and publishes them as Amazon CloudWatch custom metrics
 - **Amazon EventBridge Rule**: Refreshes quota limit values every 2.9 hours
 - **Custom Metrics Integration**: Applications publish `max_tokens` parameter values to CloudWatch on each Bedrock API call
-- **Amazon CloudWatch Dashboard**: Displays dual quota tracking:
-  - **Initial Reservation**: `InputTokens + CacheWriteTokens + MaxTokens`
-  - **Actual Consumption**: `InputTokens + CacheWriteTokens + (OutputTokens × BurndownRate)`
+- **Amazon CloudWatch Dashboard**: Displays quota tracking and latency monitoring:
+  - **Initial Reservation**: `InputTokens + CacheWriteTokens + MaxTokens` (requires custom `MaxTokens` metric)
+  - **Estimated TPM Quota Usage**: Native `EstimatedTPMQuotaUsage` metric from `AWS/Bedrock`
+  - **Request Quota Consumption**: Invocations vs RPM quota limit
+  - **Time to First Token**: p50/p90/p99 latency for streaming APIs
 - **Type-Safe Registry System**: Region-specific model configurations with compile-time validation
 
 ### Registry Architecture
