@@ -275,9 +275,6 @@ export class CdkQuotaDashboardsStack extends cdk.Stack {
         return;
       }
 
-      // Get burndown rate from model config
-      const burndownRate = config.modelConfig.outputTokenBurndownRate;
-      
       // Check if we have application profiles to aggregate
       const hasApplicationProfiles = config.applicationProfileIds && config.applicationProfileIds.length > 0;
       const allProfileIds = hasApplicationProfiles 
@@ -337,16 +334,17 @@ export class CdkQuotaDashboardsStack extends cdk.Stack {
           statistic: 'Sum',
           period: cdk.Duration.minutes(1),
         }),
-        outputTokens: new cloudwatch.Metric({
-          namespace: 'AWS/Bedrock',
-          metricName: 'OutputTokenCount',
+        maxTokens: new cloudwatch.Metric({
+          namespace: 'Bedrock/Quotas',
+          metricName: 'MaxTokens',
           dimensionsMap: { ModelId: profileId },
           statistic: 'Sum',
           period: cdk.Duration.minutes(1),
         }),
-        maxTokens: new cloudwatch.Metric({
-          namespace: 'Bedrock/Quotas',
-          metricName: 'MaxTokens',
+        // Native metric: includes cache write tokens and output burndown multipliers server-side
+        estimatedTPMQuotaUsage: new cloudwatch.Metric({
+          namespace: 'AWS/Bedrock',
+          metricName: 'EstimatedTPMQuotaUsage',
           dimensionsMap: { ModelId: profileId },
           statistic: 'Sum',
           period: cdk.Duration.minutes(1),
@@ -356,6 +354,13 @@ export class CdkQuotaDashboardsStack extends cdk.Stack {
           metricName: 'Invocations',
           dimensionsMap: { ModelId: profileId },
           statistic: 'Sum',
+          period: cdk.Duration.minutes(1),
+        }),
+        // Latency metric for streaming APIs (ConverseStream, InvokeModelWithResponseStream)
+        timeToFirstToken: new cloudwatch.Metric({
+          namespace: 'AWS/Bedrock',
+          metricName: 'TimeToFirstToken',
+          dimensionsMap: { ModelId: profileId },
           period: cdk.Duration.minutes(1),
         }),
       });
@@ -368,50 +373,81 @@ export class CdkQuotaDashboardsStack extends cdk.Stack {
       }));
 
       // Build aggregated expressions
-      let actualConsumption: cloudwatch.IMetric;
+      let estimatedQuotaUsage: cloudwatch.IMetric;
       let initialReservation: cloudwatch.IMetric;
       let totalInvocations: cloudwatch.IMetric;
+
+      // TTFT percentile metrics (p50, p90, p99) - uses first profile for dimensions
+      // TimeToFirstToken is only emitted for streaming APIs (ConverseStream, InvokeModelWithResponseStream)
+      const ttftP50 = new cloudwatch.Metric({
+        namespace: 'AWS/Bedrock',
+        metricName: 'TimeToFirstToken',
+        dimensionsMap: { ModelId: fullModelId },
+        statistic: 'p50',
+        period: cdk.Duration.minutes(1),
+        label: 'p50',
+        color: '#2ca02c',
+      });
+      const ttftP90 = new cloudwatch.Metric({
+        namespace: 'AWS/Bedrock',
+        metricName: 'TimeToFirstToken',
+        dimensionsMap: { ModelId: fullModelId },
+        statistic: 'p90',
+        period: cdk.Duration.minutes(1),
+        label: 'p90',
+        color: '#ff7f0e',
+      });
+      const ttftP99 = new cloudwatch.Metric({
+        namespace: 'AWS/Bedrock',
+        metricName: 'TimeToFirstToken',
+        dimensionsMap: { ModelId: fullModelId },
+        statistic: 'p99',
+        period: cdk.Duration.minutes(1),
+        label: 'p99',
+        color: '#d62728',
+      });
 
       if (hasApplicationProfiles) {
         // Aggregate metrics across all profiles
         const usingMetrics: { [key: string]: cloudwatch.IMetric } = {};
         const inputParts: string[] = [];
         const cacheParts: string[] = [];
-        const outputParts: string[] = [];
         const maxTokensParts: string[] = [];
+        const estimatedTPMParts: string[] = [];
         const invocationParts: string[] = [];
 
         allProfileMetrics.forEach(({ metrics, suffix }) => {
           const inputKey = `inputTokens${suffix}`;
           const cacheKey = `cacheWriteTokens${suffix}`;
-          const outputKey = `outputTokens${suffix}`;
           const maxKey = `maxTokens${suffix}`;
+          const estKey = `estimatedTPM${suffix}`;
           const invKey = `invocations${suffix}`;
 
           usingMetrics[inputKey] = metrics.inputTokens;
           usingMetrics[cacheKey] = metrics.cacheWriteTokens;
-          usingMetrics[outputKey] = metrics.outputTokens;
           usingMetrics[maxKey] = metrics.maxTokens;
+          usingMetrics[estKey] = metrics.estimatedTPMQuotaUsage;
           usingMetrics[invKey] = metrics.invocations;
 
           inputParts.push(inputKey);
           cacheParts.push(cacheKey);
-          outputParts.push(outputKey);
           maxTokensParts.push(maxKey);
+          estimatedTPMParts.push(estKey);
           invocationParts.push(invKey);
         });
 
         // Build sum expressions
         const inputSum = inputParts.join(' + ');
         const cacheSum = cacheParts.join(' + ');
-        const outputSum = outputParts.join(' + ');
         const maxTokensSum = maxTokensParts.join(' + ');
+        const estimatedTPMSum = estimatedTPMParts.join(' + ');
         const invocationSum = invocationParts.join(' + ');
 
-        actualConsumption = new cloudwatch.MathExpression({
-          expression: `(${inputSum}) + (${cacheSum}) + ((${outputSum}) * ${burndownRate})`,
+        // Native EstimatedTPMQuotaUsage metric aggregated across profiles
+        estimatedQuotaUsage = new cloudwatch.MathExpression({
+          expression: estimatedTPMSum,
           usingMetrics,
-          label: `Actual Consumption (${allProfileIds.length} profiles)`,
+          label: `Estimated TPM Quota Usage (${allProfileIds.length} profiles)`,
           period: cdk.Duration.minutes(1),
         });
 
@@ -434,16 +470,9 @@ export class CdkQuotaDashboardsStack extends cdk.Stack {
         // Single profile - use simple metrics
         const { metrics } = allProfileMetrics[0];
 
-        actualConsumption = new cloudwatch.MathExpression({
-          expression: `inputTokens + cacheWriteTokens + (outputTokens * ${burndownRate})`,
-          usingMetrics: {
-            inputTokens: metrics.inputTokens,
-            cacheWriteTokens: metrics.cacheWriteTokens,
-            outputTokens: metrics.outputTokens,
-          },
-          label: 'Actual Consumption',
-          period: cdk.Duration.minutes(1),
-        });
+        // Native EstimatedTPMQuotaUsage metric - computed server-side by Bedrock
+        // Includes cache write tokens and output burndown multipliers automatically
+        estimatedQuotaUsage = metrics.estimatedTPMQuotaUsage;
 
         initialReservation = new cloudwatch.MathExpression({
           expression: 'inputTokens + cacheWriteTokens + maxTokens',
@@ -487,11 +516,10 @@ export class CdkQuotaDashboardsStack extends cdk.Stack {
 
       // Add widgets to dashboard with quota metrics on left axis
       dashboard.addWidgets(
-        // All three widgets on the same row
         new cloudwatch.GraphWidget({
           title: `${fullModelId} - Initial Reservation${titleSuffix}`,
           left: [initialReservation, tokenQuotaLine],
-          width: 8,
+          width: 6,
           height: 6,
           leftYAxis: {
             label: 'Quota Units (Tokens/min)',
@@ -500,12 +528,12 @@ export class CdkQuotaDashboardsStack extends cdk.Stack {
           period: cdk.Duration.minutes(1),
         }),
         new cloudwatch.GraphWidget({
-          title: `${fullModelId} - Actual Consumption${titleSuffix}`,
-          left: [actualConsumption, tokenQuotaLine],
-          width: 8,
+          title: `${fullModelId} - Estimated TPM Quota Usage${titleSuffix}`,
+          left: [estimatedQuotaUsage, tokenQuotaLine],
+          width: 6,
           height: 6,
           leftYAxis: {
-            label: 'Quota Units (Tokens/min) - Does not include ongoing requests',
+            label: 'Quota Units (Tokens/min)',
             min: 0,
           },
           period: cdk.Duration.minutes(1),
@@ -513,10 +541,21 @@ export class CdkQuotaDashboardsStack extends cdk.Stack {
         new cloudwatch.GraphWidget({
           title: `${fullModelId} - Request Quota Consumption${titleSuffix}`,
           left: [totalInvocations, requestQuotaLine],
-          width: 8,
+          width: 6,
           height: 6,
           leftYAxis: {
             label: 'Quota Units (Requests/min)',
+            min: 0,
+          },
+          period: cdk.Duration.minutes(1),
+        }),
+        new cloudwatch.GraphWidget({
+          title: `${fullModelId} - Time to First Token${titleSuffix}`,
+          left: [ttftP50, ttftP90, ttftP99],
+          width: 6,
+          height: 6,
+          leftYAxis: {
+            label: 'Latency (ms)',
             min: 0,
           },
           period: cdk.Duration.minutes(1),
