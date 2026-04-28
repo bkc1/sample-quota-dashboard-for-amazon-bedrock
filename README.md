@@ -233,6 +233,10 @@ Once max_tokens metric publishing is implemented, this dashboard displays:
 
 This dual view shows what causes throttling (initial reservation) and final consumption.
 
+### Initial Reservation Fallback
+
+The Initial Reservation widget uses a CloudWatch `IF`/`FILL` fallback so it shows meaningful data even before you implement custom `MaxTokens` metric publishing. The expression uses `IF(FILL(maxTokens, 0), maxTokens, invocations * defaultMaxTokens)` — `FILL` converts missing metric data into explicit zeros, which `IF` then treats as falsy to trigger the fallback branch. When the `MaxTokens` metric has data (i.e., your application is publishing it), the widget uses it directly. When it has no data, the widget substitutes `defaultMaxTokens × Invocations`, where `defaultMaxTokens` is the model's native maximum output token limit from the model registry (e.g., 65,536 for Claude Sonnet 4.5). This value is embedded as a numeric literal in the CloudWatch math expression at CDK synth time — no Lambda changes or runtime lookups are needed. Once you start publishing the `MaxTokens` metric, the `IF` expression automatically prefers the real data.
+
 ### Understanding Quota Usage Estimates
 
 **Important:** The dashboard shows two different quota metrics, not real-time actual usage.
