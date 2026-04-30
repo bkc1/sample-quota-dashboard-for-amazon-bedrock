@@ -196,6 +196,7 @@ export const BEDROCK_MODELS = {
     CLAUDE_SONNET_4_6: createModelConfig({
       modelId: 'anthropic.claude-sonnet-4-6',
       outputTokenBurndownRate: 5,
+      defaultMaxTokens: 65536,
       supportedEndpoints: ['cross-region', 'global-cross-region'],
       crossRegion: { tokenQuotaCode: 'L-15B8E632', requestQuotaCode: 'L-00FF3314' },
       globalCrossRegion: { tokenQuotaCode: 'L-7BEE40FB', requestQuotaCode: 'L-F6E116D7' }
@@ -204,6 +205,7 @@ export const BEDROCK_MODELS = {
     CLAUDE_OPUS_4_6: createModelConfig({
       modelId: 'anthropic.claude-opus-4-6-v1',
       outputTokenBurndownRate: 5,
+      defaultMaxTokens: 131072,
       supportedEndpoints: ['cross-region', 'global-cross-region'],
       crossRegion: { tokenQuotaCode: 'L-0AD9BBE8', requestQuotaCode: 'L-11DFF789' },
       globalCrossRegion: { tokenQuotaCode: 'L-3DCCFAA4', requestQuotaCode: 'L-3DD46812' }
@@ -213,6 +215,7 @@ export const BEDROCK_MODELS = {
     CLAUDE_OPUS_4_7: createModelConfig({
       modelId: 'anthropic.claude-opus-4-7',
       outputTokenBurndownRate: 5,
+      defaultMaxTokens: 131072,
       supportedEndpoints: ['cross-region', 'global-cross-region'],
       crossRegion: { tokenQuotaCode: 'L-5DB28B7B' },
       globalCrossRegion: { tokenQuotaCode: 'L-34152C1D' }
