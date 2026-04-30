@@ -120,6 +120,16 @@ export class CdkQuotaDashboardsStack extends cdk.Stack {
       // },
       { modelConfig: BEDROCK_MODELS.ANTHROPIC.CLAUDE_OPUS_4_5, endpointType: 'cross-region' },
 
+      // Claude 4.6 Models
+      { modelConfig: BEDROCK_MODELS.ANTHROPIC.CLAUDE_SONNET_4_6, endpointType: 'cross-region' },
+      { modelConfig: BEDROCK_MODELS.ANTHROPIC.CLAUDE_SONNET_4_6, endpointType: 'global-cross-region' },
+      { modelConfig: BEDROCK_MODELS.ANTHROPIC.CLAUDE_OPUS_4_6, endpointType: 'cross-region' },
+      { modelConfig: BEDROCK_MODELS.ANTHROPIC.CLAUDE_OPUS_4_6, endpointType: 'global-cross-region' },
+
+      // Claude 4.7 Models
+      { modelConfig: BEDROCK_MODELS.ANTHROPIC.CLAUDE_OPUS_4_7, endpointType: 'cross-region' },
+      { modelConfig: BEDROCK_MODELS.ANTHROPIC.CLAUDE_OPUS_4_7, endpointType: 'global-cross-region' },
+
     ];
 
     // Validate all dashboard configurations before proceeding
