@@ -361,6 +361,13 @@ export class CdkQuotaDashboardsStack extends cdk.Stack {
           statistic: 'Sum',
           period: cdk.Duration.minutes(1),
         }),
+        maxTokensCount: new cloudwatch.Metric({
+          namespace: 'Bedrock/Quotas',
+          metricName: 'MaxTokens',
+          dimensionsMap: { ModelId: profileId },
+          statistic: 'SampleCount',
+          period: cdk.Duration.minutes(1),
+        }),
         invocations: new cloudwatch.Metric({
           namespace: 'AWS/Bedrock',
           metricName: 'Invocations',
@@ -389,6 +396,7 @@ export class CdkQuotaDashboardsStack extends cdk.Stack {
         const cacheParts: string[] = [];
         const outputParts: string[] = [];
         const maxTokensParts: string[] = [];
+        const maxTokensCountParts: string[] = [];
         const invocationParts: string[] = [];
 
         allProfileMetrics.forEach(({ metrics, suffix }) => {
@@ -396,18 +404,21 @@ export class CdkQuotaDashboardsStack extends cdk.Stack {
           const cacheKey = `cacheWriteTokens${suffix}`;
           const outputKey = `outputTokens${suffix}`;
           const maxKey = `maxTokens${suffix}`;
+          const maxCountKey = `maxTokensCount${suffix}`;
           const invKey = `invocations${suffix}`;
 
           usingMetrics[inputKey] = metrics.inputTokens;
           usingMetrics[cacheKey] = metrics.cacheWriteTokens;
           usingMetrics[outputKey] = metrics.outputTokens;
           usingMetrics[maxKey] = metrics.maxTokens;
+          usingMetrics[maxCountKey] = metrics.maxTokensCount;
           usingMetrics[invKey] = metrics.invocations;
 
           inputParts.push(inputKey);
           cacheParts.push(cacheKey);
           outputParts.push(outputKey);
           maxTokensParts.push(maxKey);
+          maxTokensCountParts.push(maxCountKey);
           invocationParts.push(invKey);
         });
 
@@ -419,7 +430,7 @@ export class CdkQuotaDashboardsStack extends cdk.Stack {
 
         const defaultMaxTokens = config.modelConfig.defaultMaxTokens;
         const effectiveMaxTokensSum = defaultMaxTokens !== undefined
-          ? maxTokensParts.map((maxKey, i) => `IF(FILL(${maxKey}, 0), ${maxKey}, ${invocationParts[i]} * ${defaultMaxTokens})`).join(' + ')
+          ? maxTokensParts.map((maxKey, i) => `FILL(${maxKey}, 0) + ((${invocationParts[i]} - FILL(${maxTokensCountParts[i]}, 0)) * ${defaultMaxTokens})`).join(' + ')
           : maxTokensParts.join(' + ');
 
         actualConsumption = new cloudwatch.MathExpression({
@@ -469,7 +480,8 @@ export class CdkQuotaDashboardsStack extends cdk.Stack {
 
         if (defaultMaxTokens !== undefined) {
           initialReservationUsingMetrics['invocations'] = metrics.invocations;
-          initialReservationExpression = `inputTokens + cacheWriteTokens + IF(FILL(maxTokens, 0), maxTokens, invocations * ${defaultMaxTokens})`;
+          initialReservationUsingMetrics['maxTokensCount'] = metrics.maxTokensCount;
+          initialReservationExpression = `inputTokens + cacheWriteTokens + FILL(maxTokens, 0) + ((invocations - FILL(maxTokensCount, 0)) * ${defaultMaxTokens})`;
         }
 
         initialReservation = new cloudwatch.MathExpression({

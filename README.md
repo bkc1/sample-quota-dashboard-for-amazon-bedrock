@@ -235,7 +235,26 @@ This dual view shows what causes throttling (initial reservation) and final cons
 
 ### Initial Reservation Fallback
 
-The Initial Reservation widget uses a CloudWatch `IF`/`FILL` fallback so it shows meaningful data even before you implement custom `MaxTokens` metric publishing. The expression uses `IF(FILL(maxTokens, 0), maxTokens, invocations * defaultMaxTokens)` — `FILL` converts missing metric data into explicit zeros, which `IF` then treats as falsy to trigger the fallback branch. When the `MaxTokens` metric has data (i.e., your application is publishing it), the widget uses it directly. When it has no data, the widget substitutes `defaultMaxTokens × Invocations`, where `defaultMaxTokens` is the model's native maximum output token limit from the model registry (e.g., 65,536 for Claude Sonnet 4.5). This value is embedded as a numeric literal in the CloudWatch math expression at CDK synth time — no Lambda changes or runtime lookups are needed. Once you start publishing the `MaxTokens` metric, the `IF` expression automatically prefers the real data.
+The Initial Reservation widget uses a SampleCount-based CloudWatch math expression so it shows meaningful data even before you implement custom `MaxTokens` metric publishing. The formula is:
+
+```
+inputTokens + cacheWriteTokens + FILL(maxTokens, 0) + ((invocations - FILL(maxTokensCount, 0)) * defaultMaxTokens)
+```
+
+Where:
+- `maxTokens` is the **Sum** of all published `max_tokens` values (from callers who publish the custom metric)
+- `maxTokensCount` is the **SampleCount** of the same `MaxTokens` metric — it counts how many invocations published the metric in a given minute
+- `invocations` is the total number of Bedrock invocations
+- `(invocations - maxTokensCount)` gives the number of invocations that did *not* publish `max_tokens`
+- Those unpublished invocations get `defaultMaxTokens` (the model's native maximum output token limit, e.g., 65,536 for Claude Sonnet 4.5)
+- `FILL(..., 0)` converts missing metric data into explicit zeros
+
+This handles three scenarios correctly:
+- **Nobody publishes `MaxTokens`**: The expression reduces to `inputTokens + cacheWriteTokens + (invocations * defaultMaxTokens)` — full default reservation for every invocation
+- **Everyone publishes `MaxTokens`**: The expression uses only the real published data, since `(invocations - invocations) * defaultMaxTokens` cancels out
+- **Mixed publishers**: The expression correctly combines the published sum with `defaultMaxTokens` applied only to the invocations that didn't publish
+
+The `defaultMaxTokens` value is embedded as a numeric literal in the CloudWatch math expression at CDK synth time — no Lambda changes or runtime lookups are needed. Once you start publishing the `MaxTokens` metric, the expression automatically blends real data with defaults for any remaining unpublished invocations.
 
 ### Understanding Quota Usage Estimates
 

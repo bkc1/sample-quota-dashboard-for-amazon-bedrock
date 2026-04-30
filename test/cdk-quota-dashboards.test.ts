@@ -160,9 +160,9 @@ function getDashboardWidgets(): any[] {
 }
 
 describe('CDK Template Assertions', () => {
-    describe('Initial Reservation fallback expression', () => {
-        test('should contain IF(FILL(maxTokens, 0), maxTokens, invocations * defaultMaxTokens) for models with defaultMaxTokens', () => {
-            // Validates: Requirements 1.1, 1.2, 1.3, 2.1, 2.3
+    describe('Initial Reservation SampleCount-based expression', () => {
+        test('should contain FILL(maxTokens, 0) + ((invocations - FILL(maxTokensCount, 0)) * defaultMaxTokens) for models with defaultMaxTokens', () => {
+            // Validates: Requirements 1.1, 1.2, 2.1, 2.3
             const widgets = getDashboardWidgets();
 
             // Find all Initial Reservation graph widgets (not text widgets)
@@ -174,7 +174,7 @@ describe('CDK Template Assertions', () => {
 
             expect(initialReservationWidgets.length).toBeGreaterThan(0);
 
-            // Every Initial Reservation widget should have the IF fallback pattern
+            // Every Initial Reservation widget should have the SampleCount-based pattern
             // since all configured models in the stack have defaultMaxTokens defined
             for (const widget of initialReservationWidgets) {
                 const metrics = widget.properties.metrics;
@@ -187,21 +187,25 @@ describe('CDK Template Assertions', () => {
 
                 // Find the Initial Reservation expression (not the FILL quota line)
                 const reservationExpr = expressions.find(
-                    (e: any) => e.expression && e.expression.includes('IF(FILL(maxTokens')
+                    (e: any) => e.expression && e.expression.includes('FILL(maxTokens') && e.expression.includes('maxTokensCount')
                 );
 
                 expect(reservationExpr).toBeDefined();
-                // Verify the pattern: IF(FILL(maxTokens, 0), maxTokens, invocations * <number>)
+                // Verify the SampleCount-based pattern: FILL(maxTokens, 0) + ((invocations - FILL(maxTokensCount, 0)) * <number>)
                 expect(reservationExpr.expression).toMatch(
-                    /IF\(FILL\(maxTokens,\s*0\),\s*maxTokens,\s*invocations\s*\*\s*\d+\)/
+                    /FILL\(maxTokens,\s*0\) \+ \(\(invocations - FILL\(maxTokensCount,\s*0\)\) \* \d+\)/
                 );
-                // Verify the full expression structure: inputTokens + cacheWriteTokens + IF(FILL(...))
-                expect(reservationExpr.expression).toContain('inputTokens + cacheWriteTokens + IF(FILL(maxTokens');
+                // Verify the full expression structure
+                expect(reservationExpr.expression).toContain('inputTokens + cacheWriteTokens + FILL(maxTokens');
+                // Verify the literal defaultMaxTokens value (65536) appears in the expression
+                expect(reservationExpr.expression).toContain('* 65536)');
+                // Verify no IF-based fallback is present (Requirement 6.3)
+                expect(reservationExpr.expression).not.toContain('IF(');
             }
         });
 
-        test('should use the correct defaultMaxTokens literal value from the model registry', () => {
-            // Validates: Requirements 2.1, 2.3
+        test('should include maxTokensCount metric with SampleCount statistic in usingMetrics', () => {
+            // Validates: Requirements 1.1, 4.3
             const widgets = getDashboardWidgets();
 
             const initialReservationWidgets = widgets.filter(
@@ -210,21 +214,22 @@ describe('CDK Template Assertions', () => {
                     w.properties?.title?.includes('Initial Reservation')
             );
 
-            // All models in the current stack config have defaultMaxTokens = 65536
-            // (NOVA_2_LITE_V1, CLAUDE_HAIKU_4_5, CLAUDE_SONNET_4_5, CLAUDE_OPUS_4_5)
+            expect(initialReservationWidgets.length).toBeGreaterThan(0);
+
             for (const widget of initialReservationWidgets) {
                 const metrics = widget.properties.metrics;
-                const expressions = metrics
-                    .filter((m: any) => Array.isArray(m) && m.some((el: any) => typeof el === 'object' && el.expression))
-                    .map((m: any) => m.find((el: any) => typeof el === 'object' && el.expression));
 
-                const reservationExpr = expressions.find(
-                    (e: any) => e.expression && e.expression.includes('IF(FILL(maxTokens')
+                // Find a metric entry with Bedrock/Quotas namespace, MaxTokens metric name,
+                // and SampleCount statistic — this is the maxTokensCount metric
+                const maxTokensCountMetric = metrics.find(
+                    (m: any) =>
+                        Array.isArray(m) &&
+                        m.includes('Bedrock/Quotas') &&
+                        m.includes('MaxTokens') &&
+                        m.some((el: any) => typeof el === 'object' && el.stat === 'SampleCount')
                 );
 
-                expect(reservationExpr).toBeDefined();
-                // Verify the literal value 65536 appears in the expression
-                expect(reservationExpr.expression).toContain('invocations * 65536');
+                expect(maxTokensCountMetric).toBeDefined();
             }
         });
     });
